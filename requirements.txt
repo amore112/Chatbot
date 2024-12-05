@@ -1,0 +1,6 @@
+whatsapp-web.js
+openai
+anthropic
+PyPDF2
+ratelimit
+
