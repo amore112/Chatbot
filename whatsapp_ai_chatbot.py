@@ -4,7 +4,7 @@ import tempfile
 import sqlite3
 import logging
 from datetime import datetime, timedelta
-from whatsapp_web_js import Client, LocalAuth, MessageMedia
+from pywhatsapp import WhatsApp
 from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
 from PyPDF2 import PdfReader
@@ -18,7 +18,7 @@ openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 anthropic_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 # Initialize WhatsApp client
-whatsapp_client = Client(LocalAuth())
+whatsapp = WhatsApp()
 
 # Initialize SQLite database
 conn = sqlite3.connect('user_data.db')
@@ -120,43 +120,38 @@ async def get_ai_response(user_id, message, pdf_content=None):
         logging.error(f"Error getting AI response: {str(e)}")
         return "I'm sorry, but I encountered an error while processing your request. Please try again later."
 
-@whatsapp_client.on("message")
-async def handle_message(message):
-    user_id = message.from_
+def handle_message(message):
+    user_id = message.sender.id
     
-    if message.hasMedia and message.type == 'document' and message.mimetype == 'application/pdf':
+    if message.type == 'document' and message.mime_type == 'application/pdf':
         try:
-            media = await message.downloadMedia()
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-                temp_file.write(media.buffer)
+                temp_file.write(message.download_media())
                 temp_file_path = temp_file.name
             
-            pdf_content = await extract_text_from_pdf(temp_file_path)
+            pdf_content = asyncio.run(extract_text_from_pdf(temp_file_path))
             os.unlink(temp_file_path)  # Delete the temporary file
             
-            response = await get_ai_response(user_id, "I've uploaded a PDF. Please use its content as context for our conversation.", pdf_content)
-            await message.reply("I've processed the PDF you sent. You can now ask questions about its content.")
+            response = asyncio.run(get_ai_response(user_id, "I've uploaded a PDF. Please use its content as context for our conversation.", pdf_content))
+            whatsapp.send_message("I've processed the PDF you sent. You can now ask questions about its content.", message.chat.id)
         except Exception as e:
             logging.error(f"Error processing PDF: {str(e)}")
-            await message.reply("I'm sorry, but I encountered an error while processing your PDF. Please try again later.")
-    elif message.body.startswith("!ai"):
-        query = message.body[4:].strip()
-        response = await get_ai_response(user_id, query)
-        await message.reply(response)
+            whatsapp.send_message("I'm sorry, but I encountered an error while processing your PDF. Please try again later.", message.chat.id)
+    elif message.content.startswith("!ai"):
+        query = message.content[4:].strip()
+        response = asyncio.run(get_ai_response(user_id, query))
+        whatsapp.send_message(response, message.chat.id)
 
-async def main():
+def main():
     logging.info("Starting WhatsApp AI Chatbot...")
-    await whatsapp_client.initialize()
-    logging.info("WhatsApp client initialized. Scan the QR code to log in.")
     
     try:
-        while True:
-            await asyncio.sleep(1)
+        whatsapp.on_message(handle_message)
+        whatsapp.run()
     except KeyboardInterrupt:
         logging.info("Shutting down...")
     finally:
         conn.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    main()
